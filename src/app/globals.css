@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap');
+
+@import "tailwindcss";
+
+:root {
+  --background: 222 47% 6%;
+  --foreground: 210 40% 92%;
+  --card: 222 47% 9%;
+  --card-foreground: 210 40% 92%;
+  --border: 217 33% 16%;
+  --input: 217 33% 13%;
+  --ring: 160 84% 39%;
+  --primary: 160 84% 39%;
+  --primary-foreground: 222 47% 6%;
+  --secondary: 217 33% 16%;
+  --secondary-foreground: 210 40% 92%;
+  --muted: 217 33% 14%;
+  --muted-foreground: 215 20% 55%;
+  --accent: 262 83% 65%;
+  --accent-foreground: 222 47% 6%;
+  --radius: 0.5rem;
+}
+
+* { border-color: hsl(var(--border)); }
+
+html, body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  height: 100%;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: hsl(var(--muted)); }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
+
+.react-flow__background { background-color: transparent !important; }
+.react-flow__node { font-family: 'Space Grotesk', system-ui, sans-serif; }
+.react-flow__edge-path { stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path { stroke-width: 3; }
+.react-flow__handle { transition: transform 0.15s ease; }
+.react-flow__handle:hover { transform: scale(1.4); }
+
+.react-flow__controls {
+  background: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4) !important;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border-bottom: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--muted-foreground)) !important;
+  transition: color 0.15s ease, background 0.15s ease !important;
+}
+.react-flow__controls-button:hover {
+  background: hsl(var(--muted)) !important;
+  color: hsl(var(--foreground)) !important;
+}
+.react-flow__controls-button:last-child { border-bottom: none !important; }
+.react-flow__minimap {
+  background: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 8px !important;
+}
+
+.node-glow-input { box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.3), 0 4px 20px rgba(14, 165, 233, 0.1); }
+.node-glow-system { box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.3), 0 4px 20px rgba(168, 85, 247, 0.1); }
+.node-glow-memory { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3), 0 4px 20px rgba(245, 158, 11, 0.1); }
+.node-glow-llm { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.3), 0 4px 20px rgba(16, 185, 129, 0.1); }
+.node-glow-output { box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.3), 0 4px 20px rgba(249, 115, 22, 0.1); }
+
+.node-executing { animation: nodeExecute 1s ease-in-out infinite; }
+@keyframes nodeExecute {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.4); }
+}
+
+.typing-cursor::after {
+  content: '▊';
+  animation: blink 1s step-end infinite;
+  color: #10b981;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes slideIn {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.animate-slide-in { animation: slideIn 0.3s ease-out; }
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in { animation: fadeIn 0.2s ease-out; }
