@@ -37,7 +37,22 @@ html, body {
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
 
 .react-flow__background { background-color: transparent !important; }
-.react-flow__node { font-family: 'Space Grotesk', system-ui, sans-serif; }
+
+/* Remove the white default wrapper React Flow adds around every custom node */
+.react-flow__node {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Only show the selection ring via our own node styles, not React Flow's default */
+.react-flow__node.selected > div,
+.react-flow__node:focus > div {
+  outline: none !important;
+}
 .react-flow__edge-path { stroke-width: 2; }
 .react-flow__edge.selected .react-flow__edge-path,
 .react-flow__edge:hover .react-flow__edge-path { stroke-width: 3; }

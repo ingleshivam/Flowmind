@@ -15,7 +15,6 @@ export async function POST(request: NextRequest) {
     const data = await response.json();
 
     if (!response.ok) {
-      // FastAPI returns { detail: "..." } for HTTP errors
       const errorMessage =
         typeof data.detail === "string"
           ? data.detail
@@ -23,16 +22,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: errorMessage }, { status: response.status });
     }
 
+    // Forward the full response including RAG metadata
     return NextResponse.json(data, { status: 200 });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
     const isConnRefused =
       message.includes("ECONNREFUSED") || message.includes("fetch failed");
-
     return NextResponse.json(
       {
         error: isConnRefused
-          ? "Cannot connect to Python backend. Make sure it is running on port 8000 (cd backend && python main.py)"
+          ? "Cannot connect to Python backend. Make sure it is running: cd backend && python main.py"
           : `Proxy error: ${message}`,
       },
       { status: 502 }
