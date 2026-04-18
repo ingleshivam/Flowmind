@@ -270,6 +270,79 @@ def build_and_run_graph(
     return result["output"]
 
 
+# ── Pipeline detection helpers ────────────────────────────────────────────────
+
+def is_connected_to_output(
+    node_id: str,
+    nodes: list[WorkflowNode],
+    edges: list[WorkflowEdge],
+    output_node: Optional[WorkflowNode],
+    visited: Optional[set] = None,
+) -> bool:
+    """Return True if node_id can reach the output node through edges."""
+    if visited is None:
+        visited = set()
+    if node_id in visited:
+        return False
+    visited.add(node_id)
+    if output_node and node_id == output_node.id:
+        return True
+    for edge in edges:
+        if edge.source == node_id:
+            if is_connected_to_output(edge.target, nodes, edges, output_node, visited):
+                return True
+    return False
+
+
+def detect_pipeline(
+    nodes: list[WorkflowNode],
+    edges: list[WorkflowEdge],
+) -> dict:
+    """
+    Inspect the canvas and return which steps are active.
+    A step is active only if its node exists AND is wired into
+    a path that leads to the Output node.
+    No mandatory nodes — execute whatever is connected.
+    """
+    output_node    = find_node(nodes, "output")
+    llm_node       = find_node(nodes, "llm")
+    input_node     = find_node(nodes, "inputMessage")
+    system_node    = find_node(nodes, "systemPrompt")
+    memory_node    = find_node(nodes, "memory")
+    doc_node       = find_node(nodes, "docUpload")
+    md_node        = find_node(nodes, "markdownConverter")
+    chunker_node   = find_node(nodes, "chunker")
+    embedder_node  = find_node(nodes, "embedder")
+    retriever_node = find_node(nodes, "retriever")
+
+    def active(n: Optional[WorkflowNode]) -> bool:
+        """Node exists AND has a path to output."""
+        if n is None:
+            return False
+        return is_connected_to_output(n.id, nodes, edges, output_node)
+
+    return {
+        "output_node":    output_node,
+        "llm_node":       llm_node       if active(llm_node)       else None,
+        "input_node":     input_node     if active(input_node)     else None,
+        "system_node":    system_node    if active(system_node)    else None,
+        "memory_node":    memory_node    if active(memory_node)    else None,
+        "doc_node":       doc_node       if active(doc_node)       else None,
+        "md_node":        md_node        if active(md_node)        else None,
+        "chunker_node":   chunker_node   if active(chunker_node)   else None,
+        "embedder_node":  embedder_node  if active(embedder_node)  else None,
+        "retriever_node": retriever_node if active(retriever_node) else None,
+        # Convenience flags
+        "has_llm":       active(llm_node),
+        "has_doc":       active(doc_node),
+        "has_markdown":  active(md_node),
+        "has_chunker":   active(chunker_node),
+        "has_embedder":  active(embedder_node),
+        "has_retriever": active(retriever_node),
+        "has_input":     active(input_node),
+    }
+
+
 # ── Main endpoint ─────────────────────────────────────────────────────────────
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -283,73 +356,102 @@ def execute_workflow(body: ExecuteRequest) -> ExecuteResponse:  # noqa: C901
     edges = body.edges
     status_msgs: dict[str, str] = {}
 
-    # ── Locate all node types ─────────────────────────────────────────────────
-    llm_node       = find_node(nodes, "llm")
-    input_node     = find_node(nodes, "inputMessage")
-    system_node    = find_node(nodes, "systemPrompt")
-    memory_node    = find_node(nodes, "memory")
-    doc_node       = find_node(nodes, "docUpload")
-    md_node        = find_node(nodes, "markdownConverter")
-    chunker_node   = find_node(nodes, "chunker")
-    embedder_node  = find_node(nodes, "embedder")
-    retriever_node = find_node(nodes, "retriever")
+    # ── Must have at least an output node ─────────────────────────────────────
+    output_node = find_node(nodes, "output")
+    if not output_node:
+        raise HTTPException(400, "Add an Output node to your canvas.")
 
-    is_rag = bool(doc_node and retriever_node and embedder_node and chunker_node and md_node)
+    # ── Detect which pipeline steps are active ────────────────────────────────
+    p = detect_pipeline(nodes, edges)
 
-    # ── Validate LLM node always ──────────────────────────────────────────────
-    if not llm_node:
-        raise HTTPException(400, "No LLM node found in the workflow.")
-    if not llm_node.data.apiKey:
-        raise HTTPException(400, "No Groq API key set. Click the key icon on the LLM node.")
-    if not llm_node.data.selectedModel:
-        raise HTTPException(400, "No model selected in the LLM node.")
+    # Nothing at all is connected to output
+    if not any([p["has_doc"], p["has_input"], p["has_llm"]]):
+        raise HTTPException(
+            400,
+            "Nothing is connected to the Output node. "
+            "Wire at least one node into the Output node.",
+        )
 
-    api_key    = llm_node.data.apiKey
-    model_name = llm_node.data.selectedModel
-
-    # ── RAG branch ────────────────────────────────────────────────────────────
-    markdown_text: str = ""
+    # ── Pipeline state ────────────────────────────────────────────────────────
+    markdown_text: str               = ""
     chunks:        list[str]         = []
     retrieved:     list[ChunkResult] = []
     vector_count:  int               = 0
     rag_context:   str               = ""
+    output:        str               = ""
+    api_key:       str               = ""
+    model_name:    str               = ""
 
-    if is_rag:
-        # 1. Doc upload validation
-        if not doc_node.data.docBase64:
-            raise HTTPException(400, "Document Upload node has no file. Please upload a document first.")
+    # Grab API key from LLM node if present
+    if p["has_llm"]:
+        llm = p["llm_node"]
+        if not llm.data.apiKey:
+            raise HTTPException(400, "No Groq API key set. Click the key icon on the LLM node.")
+        if not llm.data.selectedModel:
+            raise HTTPException(400, "No model selected in the LLM node.")
+        api_key    = llm.data.apiKey
+        model_name = llm.data.selectedModel
+    elif p["has_embedder"] or p["has_retriever"]:
+        # Embedder/Retriever need an API key even without LLM node
+        raise HTTPException(
+            400,
+            "The Embedder and Retriever nodes require a Groq API key. "
+            "Add an LLM node and set your API key.",
+        )
 
-        # 2. Connectivity checks
-        if not edges_connect(edges, doc_node.id, md_node.id):
+    # ── STEP 1: Document → Markdown ───────────────────────────────────────────
+    if p["has_doc"] and p["has_markdown"]:
+        doc = p["doc_node"]
+        if not doc.data.docBase64:
+            raise HTTPException(400, "Document Upload node has no file. Please upload a document.")
+        if not edges_connect(edges, doc.id, p["md_node"].id):
             raise HTTPException(400, "Connect Document Upload → Markdown Converter.")
-        if not edges_connect(edges, md_node.id, chunker_node.id):
-            raise HTTPException(400, "Connect Markdown Converter → Text Chunker.")
-        if not edges_connect(edges, chunker_node.id, embedder_node.id):
-            raise HTTPException(400, "Connect Text Chunker → Embedder.")
-        if not edges_connect(edges, embedder_node.id, retriever_node.id):
-            raise HTTPException(400, "Connect Embedder → Retriever.")
-
-        # 3. Markdown conversion
         try:
             markdown_text = extract_markdown(
-                doc_node.data.docBase64,
-                doc_node.data.docMimeType or "application/pdf",
-                doc_node.data.docName or "document",
+                doc.data.docBase64,
+                doc.data.docMimeType or "application/pdf",
+                doc.data.docName or "document",
             )
         except Exception as exc:
             raise HTTPException(500, f"Markdown conversion failed: {exc}")
         status_msgs["markdownConverter"] = f"Converted — {len(markdown_text):,} chars"
 
-        # 4. Chunking
-        chunk_size    = chunker_node.data.chunkSize    or 512
-        chunk_overlap = chunker_node.data.chunkOverlap or 64
+    elif p["has_doc"] and not p["has_markdown"]:
+        # DocUpload present but no MarkdownConverter — extract anyway for direct output
+        doc = p["doc_node"]
+        if not doc.data.docBase64:
+            raise HTTPException(400, "Document Upload node has no file.")
+        try:
+            markdown_text = extract_markdown(
+                doc.data.docBase64,
+                doc.data.docMimeType or "application/pdf",
+                doc.data.docName or "document",
+            )
+        except Exception as exc:
+            raise HTTPException(500, f"Document extraction failed: {exc}")
+
+    # ── STEP 2: Chunking ──────────────────────────────────────────────────────
+    if p["has_chunker"] and markdown_text:
+        md  = p["md_node"]
+        chk = p["chunker_node"]
+        if md and not edges_connect(edges, md.id, chk.id):
+            raise HTTPException(400, "Connect Markdown Converter → Text Chunker.")
+        chunk_size    = chk.data.chunkSize    or 512
+        chunk_overlap = chk.data.chunkOverlap or 64
         chunks = chunk_text(markdown_text, chunk_size, chunk_overlap)
         if not chunks:
             raise HTTPException(400, "Document produced no text chunks. Is the file readable?")
-        status_msgs["chunker"] = f"Created {len(chunks)} chunks (size={chunk_size}, overlap={chunk_overlap})"
+        status_msgs["chunker"] = (
+            f"Created {len(chunks)} chunks (size={chunk_size}, overlap={chunk_overlap})"
+        )
 
-        # 5. Embed + store
-        collection_name = embedder_node.data.collectionName or "flowmind_rag"
+    # ── STEP 3: Embed + store in Qdrant ──────────────────────────────────────
+    if p["has_embedder"] and chunks:
+        chk = p["chunker_node"]
+        emb = p["embedder_node"]
+        if chk and not edges_connect(edges, chk.id, emb.id):
+            raise HTTPException(400, "Connect Text Chunker → Embedder.")
+        collection_name = emb.data.collectionName or "flowmind_rag"
         try:
             embeddings   = embed_texts(chunks, api_key)
             vector_count = store_in_qdrant(collection_name, chunks, embeddings)
@@ -360,13 +462,17 @@ def execute_workflow(body: ExecuteRequest) -> ExecuteResponse:  # noqa: C901
             raise HTTPException(500, f"Embedding/Qdrant error: {exc}")
         status_msgs["embedder"] = f"Stored {vector_count} vectors in '{collection_name}'"
 
-        # 6. Get user query
-        query = (input_node.data.inputMessage or "").strip() if input_node else ""
+    # ── STEP 4: Retrieve relevant chunks ─────────────────────────────────────
+    if p["has_retriever"] and vector_count > 0:
+        emb = p["embedder_node"]
+        ret = p["retriever_node"]
+        if emb and not edges_connect(edges, emb.id, ret.id):
+            raise HTTPException(400, "Connect Embedder → Retriever.")
+        query = (p["input_node"].data.inputMessage or "").strip() if p["input_node"] else ""
         if not query:
-            raise HTTPException(400, "Input Message node is empty. Enter your question.")
-
-        # 7. Retrieve
-        top_k = retriever_node.data.topK or 4
+            raise HTTPException(400, "Retriever needs a query. Connect and fill an Input Message node.")
+        collection_name = (p["embedder_node"].data.collectionName or "flowmind_rag")
+        top_k = ret.data.topK or 4
         try:
             retrieved = retrieve_chunks(query, collection_name, top_k, api_key)
         except Exception as exc:
@@ -374,58 +480,99 @@ def execute_workflow(body: ExecuteRequest) -> ExecuteResponse:  # noqa: C901
         if not retrieved:
             raise HTTPException(400, "No relevant chunks found. Try rephrasing your question.")
         status_msgs["retriever"] = f"Retrieved {len(retrieved)} chunks"
-
-        # 8. Build RAG context string
-        context_parts = [
+        rag_context = "\n\n---\n\n".join(
             f"[Chunk {c.index + 1} | similarity={c.score}]\n{c.text}"
             for c in retrieved
-        ]
-        rag_context = "\n\n---\n\n".join(context_parts)
-
-    # ── Build input message and system content ─────────────────────────────────
-    if is_rag:
-        input_message = (input_node.data.inputMessage or "").strip() if input_node else ""
-    else:
-        input_message = (input_node.data.inputMessage or "").strip() if input_node else ""
-        if not input_message:
-            raise HTTPException(400, "Input Message node is empty.")
-        if input_node and not edges_connect(edges, input_node.id, llm_node.id):
-            raise HTTPException(400, "Connect Input Message → LLM node.")
-
-    system_parts: list[str] = []
-
-    # RAG context goes first so the model sees it clearly
-    if is_rag and rag_context:
-        system_parts.append(
-            "You are a precise document Q&A assistant.\n"
-            "Answer ONLY from the document context provided below.\n"
-            "If the answer is not contained in the context, reply: "
-            "'I could not find this information in the provided document.'\n\n"
-            f"DOCUMENT CONTEXT:\n{rag_context}"
         )
 
-    if system_node and edges_connect(edges, system_node.id, llm_node.id):
-        p = (system_node.data.systemPrompt or "").strip()
-        if p:
-            system_parts.append(p)
+    # ── STEP 5: Determine final output ────────────────────────────────────────
+    if p["has_llm"]:
+        # LLM is in the pipeline — build messages and call it
+        input_message = ""
 
-    if memory_node and edges_connect(edges, memory_node.id, llm_node.id):
-        m = (memory_node.data.memoryContent or "").strip()
-        if m:
-            system_parts.append(f"Memory/Context:\n{m}")
+        input_node = p.get("input_node")
+        doc_node = p.get("doc_node")
+        md_node = p.get("md_node")
+        print("DOC NODE :", doc_node)
+        print("MD NODE :", md_node)
 
-    system_content = "\n\n".join(system_parts)
+        if input_node is not None:
+            input_message = (input_node.data.inputMessage or "").strip()
 
-    # ── LLM call ──────────────────────────────────────────────────────────────
-    try:
-        output = build_and_run_graph(input_message, system_content, model_name, api_key)
-    except Exception as exc:
-        msg = str(exc)
-        if "401" in msg or "unauthorized" in msg.lower():
-            raise HTTPException(400, "Invalid Groq API key.")
-        if "429" in msg:
-            raise HTTPException(429, "Rate limit exceeded. Please wait a moment.")
-        raise HTTPException(500, f"LLM error: {msg}")
+        if not input_message and doc_node is not None:
+            markdown_text = extract_markdown(
+                doc_node.data.docBase64,
+                doc_node.data.docMimeType or "application/pdf",
+                doc_node.data.docName or "document",
+            )
+            input_message = markdown_text
+
+        print("Retrieved Input message:", input_message)
+
+        if not input_message:
+            raise HTTPException(400, "Input Message node is empty. Enter your question.")
+
+        system_parts: list[str] = []
+
+        if rag_context:
+            system_parts.append(
+                "You are a precise document Q&A assistant.\n"
+                "Answer ONLY from the document context provided below.\n"
+                "If the answer is not in the context, say: "
+                "'I could not find this information in the provided document.'\n\n"
+                f"DOCUMENT CONTEXT:\n{rag_context}"
+            )
+
+        if p["system_node"] and edges_connect(edges, p["system_node"].id, p["llm_node"].id):
+            sp = (p["system_node"].data.systemPrompt or "").strip()
+            if sp:
+                system_parts.append(sp)
+
+        if p["memory_node"] and edges_connect(edges, p["memory_node"].id, p["llm_node"].id):
+            mem = (p["memory_node"].data.memoryContent or "").strip()
+            if mem:
+                system_parts.append(f"Memory/Context:\n{mem}")
+
+        system_content = "\n\n".join(system_parts)
+
+        try:
+            output = build_and_run_graph(input_message, system_content, model_name, api_key)
+        except Exception as exc:
+            msg = str(exc)
+            if "401" in msg or "unauthorized" in msg.lower():
+                raise HTTPException(400, "Invalid Groq API key.")
+            if "429" in msg:
+                raise HTTPException(429, "Rate limit exceeded. Please wait a moment.")
+            raise HTTPException(500, f"LLM error: {msg}")
+
+    elif markdown_text and not p["has_llm"]:
+        # No LLM — return the markdown / extracted text directly
+        output = markdown_text
+        status_msgs["output"] = "Markdown content returned directly (no LLM node)"
+
+    elif chunks and not p["has_llm"]:
+        # Chunker in pipeline but no LLM — return chunk summary
+        summary = "\n\n".join(
+            f"### Chunk {i + 1}\n{c}" for i, c in enumerate(chunks[:10])
+        )
+        if len(chunks) > 10:
+            summary += f"\n\n…and {len(chunks) - 10} more chunks"
+        output = summary
+        status_msgs["output"] = f"Showing first {min(10, len(chunks))} of {len(chunks)} chunks"
+
+    elif p["has_input"] and not p["has_llm"]:
+        # Just an input node connected to output — echo the message
+        output = (p["input_node"].data.inputMessage or "").strip()
+        if not output:
+            raise HTTPException(400, "Input Message node is empty.")
+        status_msgs["output"] = "Input message passed through (no LLM node)"
+
+    else:
+        raise HTTPException(
+            400,
+            "Could not determine what to execute. "
+            "Check that your nodes are connected to the Output node.",
+        )
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
 

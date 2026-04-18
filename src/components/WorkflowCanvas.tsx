@@ -60,16 +60,16 @@ const defaultEdgeOptions = {
 const edgeColors: Record<string, { stroke: string; markerColor: string }> = {
   inputMessage: { stroke: "#0ea5e9", markerColor: "#0ea5e9" },
   systemPrompt: { stroke: "#a855f7", markerColor: "#a855f7" },
-  memory:       { stroke: "#f59e0b", markerColor: "#f59e0b" },
-  input:        { stroke: "#f97316", markerColor: "#f97316" },
-  output:       { stroke: "#10b981", markerColor: "#10b981" },
+  memory: { stroke: "#f59e0b", markerColor: "#f59e0b" },
+  input: { stroke: "#f97316", markerColor: "#f97316" },
+  output: { stroke: "#10b981", markerColor: "#10b981" },
   // RAG pipeline edges
-  doc:          { stroke: "#3b82f6", markerColor: "#3b82f6" },
-  markdown:     { stroke: "#84cc16", markerColor: "#84cc16" },
-  chunks:       { stroke: "#8b5cf6", markerColor: "#8b5cf6" },
-  vectorStore:  { stroke: "#06b6d4", markerColor: "#06b6d4" },
-  query:        { stroke: "#0ea5e9", markerColor: "#0ea5e9" },
-  context:      { stroke: "#f43f5e", markerColor: "#f43f5e" },
+  doc: { stroke: "#3b82f6", markerColor: "#3b82f6" },
+  markdown: { stroke: "#84cc16", markerColor: "#84cc16" },
+  chunks: { stroke: "#8b5cf6", markerColor: "#8b5cf6" },
+  vectorStore: { stroke: "#06b6d4", markerColor: "#06b6d4" },
+  query: { stroke: "#0ea5e9", markerColor: "#0ea5e9" },
+  context: { stroke: "#f43f5e", markerColor: "#f43f5e" },
 };
 
 let nodeIdCounter = 1;
@@ -269,11 +269,20 @@ export function WorkflowCanvas() {
   const handleExecute = useCallback(async () => {
     setExecutionStatus("running");
 
-    // Set all nodes to running state
+    // Reset all nodes to running state (clear previous results)
     setNodes((nds) =>
       nds.map((n) => ({
         ...n,
-        data: { ...n.data, executionStatus: "running", outputContent: undefined },
+        data: {
+          ...n.data,
+          executionStatus: "running",
+          outputContent: undefined,
+          statusMessage: undefined,
+          markdownPreview: undefined,
+          chunkCount: undefined,
+          vectorCount: undefined,
+          retrievedChunks: undefined,
+        },
       }))
     );
 
@@ -291,20 +300,20 @@ export function WorkflowCanvas() {
             id: n.id,
             type: n.type,
             data: {
-              nodeType:       (n.data as WorkflowNodeData).nodeType,
-              inputMessage:   (n.data as WorkflowNodeData).inputMessage,
-              systemPrompt:   (n.data as WorkflowNodeData).systemPrompt,
-              memoryContent:  (n.data as WorkflowNodeData).memoryContent,
-              selectedModel:  (n.data as WorkflowNodeData).selectedModel,
-              apiKey:         (n.data as WorkflowNodeData).apiKey,
+              nodeType: (n.data as WorkflowNodeData).nodeType,
+              inputMessage: (n.data as WorkflowNodeData).inputMessage,
+              systemPrompt: (n.data as WorkflowNodeData).systemPrompt,
+              memoryContent: (n.data as WorkflowNodeData).memoryContent,
+              selectedModel: (n.data as WorkflowNodeData).selectedModel,
+              apiKey: (n.data as WorkflowNodeData).apiKey,
               // RAG node data
-              docName:        (n.data as WorkflowNodeData).docName,
-              docBase64:      (n.data as WorkflowNodeData).docBase64,
-              docMimeType:    (n.data as WorkflowNodeData).docMimeType,
-              chunkSize:      (n.data as WorkflowNodeData).chunkSize,
-              chunkOverlap:   (n.data as WorkflowNodeData).chunkOverlap,
+              docName: (n.data as WorkflowNodeData).docName,
+              docBase64: (n.data as WorkflowNodeData).docBase64,
+              docMimeType: (n.data as WorkflowNodeData).docMimeType,
+              chunkSize: (n.data as WorkflowNodeData).chunkSize,
+              chunkOverlap: (n.data as WorkflowNodeData).chunkOverlap,
               collectionName: (n.data as WorkflowNodeData).collectionName,
-              topK:           (n.data as WorkflowNodeData).topK,
+              topK: (n.data as WorkflowNodeData).topK,
             },
           })),
           edges: edges.map((e) => ({
@@ -330,7 +339,7 @@ export function WorkflowCanvas() {
         nds.map((n) => {
           const nd = n.data as WorkflowNodeData;
           const base = { ...n.data, executionStatus: "success" as const };
-          const msg  = statusMsgs[nd.nodeType];
+          const msg = statusMsgs[nd.nodeType];
 
           switch (nd.nodeType) {
             case "output":
@@ -389,15 +398,53 @@ export function WorkflowCanvas() {
     rfInstance?.fitView({ padding: 0.1, duration: 600 });
   }, [rfInstance]);
 
-  // Check if workflow is executable
-  const canExecute = useMemo(() => {
+  // Check if workflow is executable + derive a hint for why it cannot run
+  const { canExecute, disabledReason } = useMemo(() => {
+    // Need at least an Output node
+    const outputNode = nodesWithCallbacks.find(
+      (n) => (n.data as WorkflowNodeData).nodeType === "output"
+    );
+    if (!outputNode) {
+      return { canExecute: false, disabledReason: "Add an Output node to your canvas" };
+    }
+
+    // At least one other node must be connected to the output (has an incoming edge)
+    const outputHasSource = edges.some((e) => e.target === outputNode.id);
+    if (!outputHasSource) {
+      return { canExecute: false, disabledReason: "Connect a node to the Output node" };
+    }
+
+    // If LLM node is on canvas it MUST have a key & model configured
     const llmNode = nodesWithCallbacks.find(
       (n) => (n.data as WorkflowNodeData).nodeType === "llm"
     );
-    if (!llmNode) return false;
-    const data = llmNode.data as WorkflowNodeData;
-    return !!(data.apiKey && data.selectedModel);
-  }, [nodesWithCallbacks]);
+    if (llmNode) {
+      const d = llmNode.data as WorkflowNodeData;
+      if (!d.apiKey) {
+        return { canExecute: false, disabledReason: "Set a Groq API key on the LLM node" };
+      }
+      if (!d.selectedModel) {
+        return { canExecute: false, disabledReason: "Select a model on the LLM node" };
+      }
+    }
+
+    // If Embedder/Retriever is present, LLM node must also be present (for API key)
+    const hasEmbedder = nodesWithCallbacks.some((n) => (n.data as WorkflowNodeData).nodeType === "embedder");
+    const hasRetriever = nodesWithCallbacks.some((n) => (n.data as WorkflowNodeData).nodeType === "retriever");
+    if ((hasEmbedder || hasRetriever) && !llmNode) {
+      return { canExecute: false, disabledReason: "Add an LLM node to provide the API key for embeddings" };
+    }
+
+    // DocUpload node present but no file uploaded yet
+    const docNode = nodesWithCallbacks.find(
+      (n) => (n.data as WorkflowNodeData).nodeType === "docUpload"
+    );
+    if (docNode && !(docNode.data as WorkflowNodeData).docBase64) {
+      return { canExecute: false, disabledReason: "Upload a document in the Document Upload node" };
+    }
+
+    return { canExecute: true, disabledReason: "" };
+  }, [nodesWithCallbacks, edges]);
 
   // Save API key to LLM node
   const handleApiKeySave = useCallback(
@@ -421,6 +468,7 @@ export function WorkflowCanvas() {
         edgeCount={edges.length}
         executionStatus={executionStatus}
         canExecute={canExecute}
+        disabledReason={disabledReason}
         onExecute={handleExecute}
         onClearCanvas={handleClearCanvas}
         onResetLayout={handleResetLayout}

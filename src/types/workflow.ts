@@ -71,15 +71,15 @@ export interface ExecutePayload {
 
 export const GROQ_MODELS = [
   { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B Versatile", tier: "flagship" },
-  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B Instant", tier: "fast" },
-  { id: "llama3-70b-8192", label: "Llama 3 70B", tier: "standard" },
-  { id: "llama3-8b-8192", label: "Llama 3 8B", tier: "fast" },
-  { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B", tier: "standard" },
-  { id: "gemma2-9b-it", label: "Gemma 2 9B IT", tier: "fast" },
+  { id: "llama-3.1-8b-instant",    label: "Llama 3.1 8B Instant",    tier: "fast"     },
+  { id: "llama3-70b-8192",         label: "Llama 3 70B",             tier: "standard" },
+  { id: "llama3-8b-8192",          label: "Llama 3 8B",              tier: "fast"     },
+  { id: "mixtral-8x7b-32768",      label: "Mixtral 8x7B",            tier: "standard" },
+  { id: "gemma2-9b-it",            label: "Gemma 2 9B IT",           tier: "fast"     },
 ] as const;
 
 export type GroqModelId = typeof GROQ_MODELS[number]["id"];
 
 export const EMBEDDING_MODEL = "nomic-embed-text-v1_5";
-export const EMBEDDING_DIM = 768;
+export const EMBEDDING_DIM   = 768;
 export const DEFAULT_COLLECTION = "flowmind_rag";
